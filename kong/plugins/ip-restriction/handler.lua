@@ -37,7 +37,7 @@ function IpRestrictionHandler:access(conf)
   local binary_remote_addr = ngx.var.binary_remote_addr
 
   if not binary_remote_addr then
-    return kong.response.exit(FORBIDDEN, { message = "Cannot identify the client IP address, unix domain sockets are not supported." })
+    return kong.response.error(FORBIDDEN, "Cannot identify the client IP address, unix domain sockets are not supported.")
   end
 
   if conf.blacklist and #conf.blacklist > 0 then
