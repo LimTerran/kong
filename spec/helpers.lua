@@ -1773,15 +1773,18 @@ luassert:register("assertion", "cn", assert_cn,
 
 
 do
-  --- Generic modifier "errlog"
+  --- Generic modifier "logfile"
   -- Will set an "errlog_path" value in the assertion state.
-  -- @name errlog
-  -- @param path A path to the errlog file (defaults to the test prefix's
+  -- @name logfile
+  -- @param path A path to the log file (defaults to the test prefix's
   -- errlog).
+  -- @see line
+  -- @usage
+  -- assert.logfile("./my/logfile.log").has.no.line("[error]", true)
   local function modifier_errlog(state, args)
     local errlog_path = args[1] or conf.nginx_err_logs
 
-    assert(type(errlog_path) == "string", "errlog modifier expects nil, or " ..
+    assert(type(errlog_path) == "string", "logfile modifier expects nil, or " ..
                                           "a string as argument, got: "      ..
                                           type(errlog_path))
 
@@ -1790,10 +1793,11 @@ do
     return state
   end
 
-  luassert:register("modifier", "errlog", modifier_errlog)
+  luassert:register("modifier", "errlog", modifier_errlog) -- backward compat
+  luassert:register("modifier", "logfile", modifier_errlog)
 
 
-  --- Assertion checking is any line from a file matches the given regex or
+  --- Assertion checking if any line from a file matches the given regex or
   -- substring.
   -- @name line
   -- @param regex The regex to evaluate against each line.
@@ -1801,12 +1805,11 @@ do
   -- string.
   -- @param timeout An optional timeout after which the assertion will fail if
   -- reached.
-  -- @param fpath An optional path to the file (defaults to the errlog
+  -- @param fpath An optional path to the file (defaults to the filelog
   -- modifier)
-  -- @see errlog
+  -- @see logfile
   -- @usage
-  -- assert.not_line("[error]", true)
-  -- assert.errlog().not_has.line("[error]", true)
+  -- assert.logfile().has.no.line("[error]", true)
   local function match_line(state, args)
     local regex = args[1]
     local plain = args[2]
@@ -1889,10 +1892,14 @@ end
 -- fixtures.dns_mock:SRV {
 --   name = "my.srv.test.com",     -- adding same name again: record gets 2 entries!
 --   target = "b.my.srv.test.com", -- a.my.srv.test.com and b.my.srv.test.com
---   port = 80,
+--   port = 8080,
 -- }
 -- fixtures.dns_mock:A {
 --   name = "a.my.srv.test.com",
+--   address = "127.0.0.1",
+-- }
+-- fixtures.dns_mock:A {
+--   name = "b.my.srv.test.com",
 --   address = "127.0.0.1",
 -- }
 -- @section DNS-mocks
@@ -2181,6 +2188,20 @@ local function get_pid_from_file(pid_path)
 end
 
 
+local function pid_dead(pid, timeout)
+  local max_time = ngx.now() + (timeout or 10)
+
+  repeat
+    if not pl_utils.execute("ps -p " .. pid .. " >/dev/null 2>&1") then
+      return true
+    end
+    -- still running, wait some more
+    ngx.sleep(0.05)
+  until ngx.now() >= max_time
+  
+  return false
+end
+
 -- Waits for the termination of a pid.
 -- @param pid_path Filename of the pid file.
 -- @param timeout (optional) in seconds, defaults to 10.
@@ -2188,15 +2209,9 @@ local function wait_pid(pid_path, timeout, is_retry)
   local pid = get_pid_from_file(pid_path)
 
   if pid then
-    local max_time = ngx.now() + (timeout or 10)
-
-    repeat
-      if not pl_utils.execute("ps -p " .. pid .. " >/dev/null 2>&1") then
-        return
-      end
-      -- still running, wait some more
-      ngx.sleep(0.05)
-    until ngx.now() >= max_time
+    if pid_dead(pid, timeout) then
+      return
+    end
 
     if is_retry then
       return
@@ -2605,5 +2620,25 @@ end
     end
 
     return kill.kill(pid_path, signal)
+  end,
+  -- send signal to all Nginx workers, not including the master
+  signal_workers = function(prefix, signal, pid_path)
+    if not pid_path then
+      local running_conf = get_running_conf(prefix)
+      if not running_conf then
+        error("no config file found at prefix: " .. prefix)
+      end
+
+      pid_path = running_conf.nginx_pid
+    end
+
+    local cmd = string.format("pkill %s -P `cat %s`", signal, pid_path)
+    local _, code = pl_utils.execute(cmd)
+
+    if not pid_dead(pid_path) then
+      return false
+    end
+
+    return code
   end,
 }
